@@ -12,6 +12,9 @@ const router = useRouter()
 const documentStore = useDocumentStore()
 
 const showSidebar = ref(true)
+const newTagInput = ref('')
+const showTagInput = ref(false)
+const scrollPosition = ref<number | null>(null)
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
 
 const handleKeydown = (e: KeyboardEvent) => {
@@ -23,9 +26,18 @@ const handleKeydown = (e: KeyboardEvent) => {
   }
 }
 
+const handleSearchSelect = (_id: string, position: number) => {
+  scrollPosition.value = position
+}
+
 watch(() => route.params.id, async (id) => {
   if (id) {
     await documentStore.openDocument(String(id))
+    if (scrollPosition.value !== null) {
+      setTimeout(() => {
+        scrollPosition.value = null
+      }, 500)
+    }
   }
 }, { immediate: true })
 
@@ -38,6 +50,39 @@ watch(() => documentStore.currentContent, () => {
     documentStore.saveCurrentDocument()
   }, 1000)
 })
+
+const handleAddTag = () => {
+  if (!newTagInput.value.trim() || !documentStore.currentDocument) return
+  
+  documentStore.addTagToDocument(
+    documentStore.currentDocument.id,
+    newTagInput.value.trim()
+  )
+  newTagInput.value = ''
+  showTagInput.value = false
+}
+
+const handleRemoveTag = (tag: string) => {
+  if (!documentStore.currentDocument) return
+  documentStore.removeTagFromDocument(documentStore.currentDocument.id, tag)
+}
+
+const handleTagInputKeydown = (e: KeyboardEvent) => {
+  if (e.key === 'Enter') {
+    handleAddTag()
+  } else if (e.key === 'Escape') {
+    showTagInput.value = false
+    newTagInput.value = ''
+  }
+}
+
+const getTagStyle = (tag: string) => {
+  const tagColor = documentStore.getTagColor(tag)
+  return {
+    backgroundColor: tagColor.backgroundColor,
+    color: tagColor.color
+  }
+}
 
 onMounted(async () => {
   await documentStore.initialize()
@@ -67,7 +112,7 @@ onUnmounted(() => {
 <template>
   <div class="editor-view">
     <div class="sidebar-left" v-if="showSidebar">
-      <TreeView />
+      <TreeView @search-select="handleSearchSelect" />
     </div>
     <div class="main-content">
       <div class="toolbar">
@@ -81,7 +126,40 @@ onUnmounted(() => {
           </span>
         </div>
       </div>
-      <Editor v-if="documentStore.currentDocument" />
+      
+      <div v-if="documentStore.currentDocument" class="tags-bar">
+        <div class="tags-container">
+          <span 
+            v-for="tag in documentStore.currentDocument.tags" 
+            :key="tag" 
+            class="tag-item"
+            :style="getTagStyle(tag)"
+          >
+            {{ tag }}
+            <button class="tag-remove" @click="handleRemoveTag(tag)">×</button>
+          </span>
+          <div v-if="showTagInput" class="tag-input-wrapper">
+            <input
+              ref="tagInputRef"
+              v-model="newTagInput"
+              @blur="handleAddTag"
+              @keydown="handleTagInputKeydown"
+              placeholder="输入标签..."
+              class="tag-input"
+              autofocus
+            />
+          </div>
+          <button v-else class="add-tag-btn" @click="showTagInput = true">
+            + 添加标签
+          </button>
+        </div>
+      </div>
+      
+      <Editor 
+        v-if="documentStore.currentDocument" 
+        :scroll-to-position="scrollPosition"
+        @scrolled="scrollPosition = null"
+      />
       <div v-else class="empty-state">
         <h2>选择或创建一个文档</h2>
         <p>从左侧目录选择文档或右键新建</p>
@@ -132,6 +210,80 @@ onUnmounted(() => {
 .updated {
   font-size: 0.85rem;
   color: #888;
+}
+
+.tags-bar {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--sidebar-bg);
+}
+
+.tags-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tag-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.tag-remove {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.tag-remove:hover {
+  opacity: 1;
+}
+
+.tag-input-wrapper {
+  display: inline-flex;
+}
+
+.tag-input {
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-size: 0.8rem;
+  width: 120px;
+}
+
+.tag-input:focus {
+  outline: none;
+  border-color: var(--accent-color);
+}
+
+.add-tag-btn {
+  background: transparent;
+  border: 1px dashed var(--border-color);
+  color: #888;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.add-tag-btn:hover {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
 }
 
 .empty-state {

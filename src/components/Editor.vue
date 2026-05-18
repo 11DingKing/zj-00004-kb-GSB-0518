@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, onBeforeUnmount } from "vue";
+import { ref, onMounted, watch, onBeforeUnmount, nextTick } from "vue";
 import { useDocumentStore } from "../stores/document";
-import { EditorState } from "@codemirror/state";
+import { EditorState, EditorSelection } from "@codemirror/state";
 import {
   EditorView,
   keymap,
@@ -15,6 +15,14 @@ import { languages } from "@codemirror/language-data";
 import { autocompletion, completionKeymap } from "@codemirror/autocomplete";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { renderMarkdown } from "../utils/markdown";
+
+const props = defineProps<{
+  scrollToPosition?: number | null;
+}>();
+
+const emit = defineEmits<{
+  (e: "scrolled"): void;
+}>();
 
 const documentStore = useDocumentStore();
 
@@ -60,6 +68,20 @@ const linkCompletion = (context: {
 const updateContent = () => {
   if (!editorView) return;
   documentStore.currentContent = editorView.state.doc.toString();
+};
+
+const scrollToPosition = (pos: number) => {
+  if (!editorView) return;
+  
+  const doc = editorView.state.doc;
+  const safePos = Math.max(0, Math.min(pos, doc.length));
+  
+  editorView.dispatch({
+    selection: EditorSelection.cursor(safePos),
+    scrollIntoView: true,
+  });
+  
+  emit("scrolled");
 };
 
 const handleDrop = async (e: DragEvent) => {
@@ -142,6 +164,18 @@ watch(
           insert: documentStore.currentContent,
         },
       });
+    }
+  },
+);
+
+watch(
+  () => props.scrollToPosition,
+  async (pos) => {
+    if (pos !== null && pos !== undefined && editorView) {
+      await nextTick();
+      setTimeout(() => {
+        scrollToPosition(pos);
+      }, 100);
     }
   },
 );
