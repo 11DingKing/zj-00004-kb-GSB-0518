@@ -12,16 +12,28 @@ const emit = defineEmits<{
 const router = useRouter()
 const documentStore = useDocumentStore()
 
+/** 右键菜单状态 */
 const contextMenu = ref<{ x: number; y: number; documentId?: string } | null>(null)
+/** 正在编辑的文档 ID */
 const editingId = ref<string | null>(null)
+/** 正在编辑的文档标题 */
 const editingTitle = ref('')
+/** 正在拖拽的文档 ID */
 const draggedItem = ref<string | null>(null)
+/** 搜索关键词 */
 const searchQuery = ref('')
+/** 搜索结果列表 */
 const searchResults = ref<SearchResult[]>([])
+/** 当前选中的标签过滤条件 */
 const selectedTag = ref('')
 
+/** 搜索防抖定时器 */
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
+/**
+ * 根据选中的标签过滤文档列表
+ * @returns 过滤并排序后的文档列表
+ */
 const filteredDocuments = computed(() => {
   let docs = [...documentStore.documents]
   
@@ -32,8 +44,13 @@ const filteredDocuments = computed(() => {
   return docs.sort((a, b) => a.title.localeCompare(b.title))
 })
 
+/** 是否有有效的搜索查询 */
 const hasSearchQuery = computed(() => searchQuery.value.trim().length > 0)
 
+/**
+ * 处理搜索输入，带 150ms 防抖
+ * 实时搜索所有文档的标题、正文和标签
+ */
 const handleSearch = () => {
   if (searchTimer) {
     clearTimeout(searchTimer)
@@ -48,8 +65,15 @@ const handleSearch = () => {
   }, 150)
 }
 
+/** 监听搜索关键词变化，触发搜索 */
 watch(searchQuery, handleSearch)
 
+/**
+ * 高亮文本中的匹配关键词
+ * @param text - 原始文本
+ * @param query - 搜索关键词
+ * @returns 带有高亮标记的 HTML 字符串
+ */
 const highlightText = (text: string, query: string) => {
   if (!query.trim()) return text
   
@@ -57,6 +81,11 @@ const highlightText = (text: string, query: string) => {
   return text.replace(regex, '<mark class="search-highlight">$1</mark>')
 }
 
+/**
+ * 处理搜索结果点击事件
+ * 跳转到对应文档并滚动到第一个匹配位置
+ * @param result - 搜索结果项
+ */
 const handleSearchResultClick = (result: SearchResult) => {
   const contentMatch = result.matchPositions.find(m => m.field === 'content')
   const position = contentMatch ? contentMatch.start : 0
@@ -147,6 +176,12 @@ const handleDrop = (e: DragEvent) => {
   draggedItem.value = null
 }
 
+/**
+ * 获取标签的颜色样式
+ * 基于标签名 hash 自动生成 HSL 颜色
+ * @param tag - 标签名称
+ * @returns 包含背景色和文字颜色的样式对象
+ */
 const getTagStyle = (tag: string) => {
   const tagColor = documentStore.getTagColor(tag)
   return {

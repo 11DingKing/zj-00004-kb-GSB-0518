@@ -177,6 +177,13 @@ export const useDocumentStore = defineStore("document", () => {
     return URL.createObjectURL(image.blob);
   }
 
+  /**
+   * 全文搜索文档
+   * 搜索范围包括标题、正文内容和标签
+   * 返回包含匹配位置信息的搜索结果
+   * @param query - 搜索关键词
+   * @returns 搜索结果数组，按匹配度排序
+   */
   async function searchDocuments(query: string): Promise<SearchResult[]> {
     if (!query.trim()) return [];
 
@@ -313,6 +320,12 @@ export const useDocumentStore = defineStore("document", () => {
     return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
+  /**
+   * 计算字符串的 hash 值
+   * 用于根据标签名生成稳定的颜色
+   * @param str - 输入字符串
+   * @returns 非负整数 hash 值
+   */
   function hashString(str: string): number {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
@@ -323,6 +336,13 @@ export const useDocumentStore = defineStore("document", () => {
     return Math.abs(hash);
   }
 
+  /**
+   * 根据标签名生成颜色
+   * 使用 HSL 色轮，基于标签名 hash 自动分配颜色
+   * 保证相同标签始终使用相同颜色
+   * @param tagName - 标签名称
+   * @returns 包含背景色和文字颜色的对象
+   */
   function getTagColor(tagName: string): TagWithColor {
     const hash = hashString(tagName);
     const hue = hash % 360;
@@ -334,6 +354,7 @@ export const useDocumentStore = defineStore("document", () => {
     return { name: tagName, color, backgroundColor };
   }
 
+  /** 所有文档中使用的标签列表（去重并排序） */
   const allTags = computed(() => {
     const tagSet = new Set<string>();
     documents.value.forEach((doc) => {
@@ -342,15 +363,26 @@ export const useDocumentStore = defineStore("document", () => {
     return Array.from(tagSet).sort();
   });
 
+  /** 所有标签及其对应的颜色信息 */
   const allTagsWithColor = computed(() => {
     return allTags.value.map((tag) => getTagColor(tag));
   });
 
+  /**
+   * 根据标签过滤文档
+   * @param tag - 标签名称，为空时返回所有文档
+   * @returns 包含指定标签的文档列表
+   */
   function getDocumentsByTag(tag: string): DocumentMeta[] {
     if (!tag) return documents.value;
     return documents.value.filter((doc) => doc.tags.includes(tag));
   }
 
+  /**
+   * 为文档添加标签
+   * @param documentId - 文档 ID
+   * @param tag - 要添加的标签名称
+   */
   async function addTagToDocument(documentId: string, tag: string) {
     const doc = documents.value.find((d) => d.id === documentId);
     if (!doc) return;
@@ -367,6 +399,11 @@ export const useDocumentStore = defineStore("document", () => {
     }
   }
 
+  /**
+   * 从文档移除标签
+   * @param documentId - 文档 ID
+   * @param tag - 要移除的标签名称
+   */
   async function removeTagFromDocument(documentId: string, tag: string) {
     const doc = documents.value.find((d) => d.id === documentId);
     if (!doc) return;
