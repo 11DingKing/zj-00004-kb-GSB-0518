@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, onBeforeUnmount } from "vue";
+import { ref, computed, onMounted, watch, onBeforeUnmount, nextTick } from "vue";
 import { useDocumentStore } from "../stores/document";
 import { EditorState } from "@codemirror/state";
 import {
@@ -15,13 +15,43 @@ import { languages } from "@codemirror/language-data";
 import { autocompletion, completionKeymap } from "@codemirror/autocomplete";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { renderMarkdown } from "../utils/markdown";
+import { tagColor, tagColorDark } from "../types";
 
 const documentStore = useDocumentStore();
 
 const editorContainer = ref<HTMLDivElement | null>(null);
 const previewContainer = ref<HTMLDivElement | null>(null);
+const newTagInput = ref("");
 let editorView: EditorView | null = null;
 let isDark = document.documentElement.classList.contains("dark");
+
+const currentTags = computed(() => {
+  return documentStore.currentDocument?.tags || [];
+});
+
+const isDarkMode = computed(() => document.documentElement.classList.contains("dark"));
+
+const getTagStyle = (tag: string) => {
+  return {
+    backgroundColor: isDarkMode.value ? tagColorDark(tag) : tagColor(tag),
+  };
+};
+
+const addTag = () => {
+  const tag = newTagInput.value.trim();
+  if (!tag || !documentStore.currentDocument) return;
+  if (currentTags.value.includes(tag)) {
+    newTagInput.value = "";
+    return;
+  }
+  documentStore.addTag(documentStore.currentDocument.id, tag);
+  newTagInput.value = "";
+};
+
+const removeTag = (tag: string) => {
+  if (!documentStore.currentDocument) return;
+  documentStore.removeTag(documentStore.currentDocument.id, tag);
+};
 
 const linkCompletion = (context: {
   state: EditorState;
@@ -82,6 +112,25 @@ const handleDrop = async (e: DragEvent) => {
 
 const handleDragOver = (e: DragEvent) => {
   e.preventDefault();
+};
+
+const scrollToSearchMatch = () => {
+  const query = documentStore.searchScrollTarget;
+  if (!query || !editorView) return;
+
+  const content = editorView.state.doc.toString();
+  const lowerContent = content.toLowerCase();
+  const lowerQuery = query.toLowerCase();
+  const idx = lowerContent.indexOf(lowerQuery);
+
+  if (idx !== -1) {
+    editorView.dispatch({
+      selection: { anchor: idx },
+      scrollIntoView: true,
+    });
+  }
+
+  documentStore.setSearchScrollTarget(null);
 };
 
 const setupEditor = () => {
@@ -146,6 +195,16 @@ watch(
   },
 );
 
+watch(
+  () => documentStore.searchScrollTarget,
+  async (target) => {
+    if (target) {
+      await nextTick();
+      scrollToSearchMatch();
+    }
+  },
+);
+
 onMounted(() => {
   isDark = document.documentElement.classList.contains("dark");
   setupEditor();
@@ -157,13 +216,97 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="editor-container">
-    <div ref="editorContainer" class="editor-pane"></div>
-    <div ref="previewContainer" class="preview-pane"></div>
+  <div class="editor-wrapper">
+    <div v-if="documentStore.currentDocument" class="tag-bar">
+      <div class="tag-list">
+        <span
+          v-for="tag in currentTags"
+          :key="tag"
+          class="tag-chip"
+          :style="getTagStyle(tag)"
+        >
+          {{ tag }}
+          <button class="tag-remove" @click="removeTag(tag)">✕</button>
+        </span>
+        <input
+          v-model="newTagInput"
+          class="tag-input"
+          placeholder="添加标签..."
+          @keyup.enter="addTag"
+        />
+      </div>
+    </div>
+    <div class="editor-container">
+      <div ref="editorContainer" class="editor-pane"></div>
+      <div ref="previewContainer" class="preview-pane"></div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.editor-wrapper {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+.tag-bar {
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  background: var(--sidebar-bg);
+}
+
+.tag-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.tag-remove {
+  border: none;
+  background: transparent;
+  padding: 0 2px;
+  font-size: 0.65rem;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.6;
+  line-height: 1;
+}
+
+.tag-remove:hover {
+  opacity: 1;
+}
+
+.tag-input {
+  border: none;
+  background: transparent;
+  padding: 2px 6px;
+  font-size: 0.75rem;
+  min-width: 80px;
+  max-width: 140px;
+}
+
+.tag-input:focus {
+  outline: none;
+}
+
 .editor-container {
   display: flex;
   flex: 1;

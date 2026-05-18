@@ -1,6 +1,11 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import type { DocumentMeta, Snapshot, SearchResult } from "../types";
+import type {
+  DocumentMeta,
+  Snapshot,
+  SearchResult,
+  FullTextSearchResult,
+} from "../types";
 import {
   generateId,
   getDocuments,
@@ -27,6 +32,7 @@ export const useDocumentStore = defineStore("document", () => {
   const currentContent = ref("");
   const snapshots = ref<Snapshot[]>([]);
   const isInitialized = ref(false);
+  const searchScrollTarget = ref<string | null>(null);
 
   const documentsMap = computed(() => {
     const map = new Map<string, DocumentMeta>();
@@ -36,6 +42,14 @@ export const useDocumentStore = defineStore("document", () => {
 
   const documentTitles = computed(() => {
     return documents.value.map((doc) => doc.title);
+  });
+
+  const allTags = computed(() => {
+    const tagSet = new Set<string>();
+    documents.value.forEach((doc) => {
+      doc.tags.forEach((tag) => tagSet.add(tag));
+    });
+    return Array.from(tagSet).sort();
   });
 
   async function initialize() {
@@ -225,6 +239,108 @@ export const useDocumentStore = defineStore("document", () => {
     );
   }
 
+  async function fullTextSearch(
+    query: string,
+  ): Promise<FullTextSearchResult[]> {
+    if (!query.trim()) return [];
+
+    const lowerQuery = query.toLowerCase();
+    const results: FullTextSearchResult[] = [];
+
+    for (const doc of documents.value) {
+      const titleMatch = doc.title.toLowerCase().includes(lowerQuery);
+      const content = (await getDocFromDB(doc.id)) || "";
+      const lowerContent = content.toLowerCase();
+
+      const contentMatchIndex = lowerContent.indexOf(lowerQuery);
+      if (!titleMatch && contentMatchIndex === -1) continue;
+
+      const matchPositions: number[] = [];
+      let searchFrom = 0;
+      while (searchFrom < lowerContent.length) {
+        const idx = lowerContent.indexOf(lowerQuery, searchFrom);
+        if (idx === -1) break;
+        matchPositions.push(idx);
+        searchFrom = idx + 1;
+      }
+
+      const snippet = extractSnippet(content, query);
+      const highlightedSnippet = highlightSnippet(content, query);
+
+      let score = 1.0;
+      if (titleMatch) score -= 0.4;
+      score -= matchPositions.length * 0.05;
+      score = Math.max(0, score);
+
+      results.push({
+        document: doc,
+        snippet,
+        highlightedSnippet,
+        matchPositions,
+        score,
+      });
+    }
+
+    results.sort((a, b) => a.score - b.score);
+    return results;
+  }
+
+  function highlightSnippet(content: string, query: string): string {
+    const lowerContent = content.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    const idx = lowerContent.indexOf(lowerQuery);
+    if (idx === -1) {
+      const text = content.substring(0, 200);
+      return escapeHtml(text) + (content.length > 200 ? "..." : "");
+    }
+
+    const start = Math.max(0, idx - 60);
+    const end = Math.min(content.length, idx + query.length + 60);
+    const before = content.substring(start, idx);
+    const match = content.substring(idx, idx + query.length);
+    const after = content.substring(idx + query.length, end);
+
+    let result = "";
+    if (start > 0) result += "...";
+    result += escapeHtml(before);
+    result += `<mark class="search-highlight">${escapeHtml(match)}</mark>`;
+    result += escapeHtml(after);
+    if (end < content.length) result += "...";
+    return result;
+  }
+
+  function escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  async function addTag(documentId: string, tag: string): Promise<void> {
+    const doc = documents.value.find((d) => d.id === documentId);
+    if (!doc || doc.tags.includes(tag)) return;
+    doc.tags = [...doc.tags, tag];
+    updateDocument(documentId, { tags: doc.tags });
+    if (currentDocument.value?.id === documentId) {
+      currentDocument.value = { ...currentDocument.value, tags: doc.tags };
+    }
+  }
+
+  async function removeTag(documentId: string, tag: string): Promise<void> {
+    const doc = documents.value.find((d) => d.id === documentId);
+    if (!doc) return;
+    doc.tags = doc.tags.filter((t) => t !== tag);
+    updateDocument(documentId, { tags: doc.tags });
+    if (currentDocument.value?.id === documentId) {
+      currentDocument.value = { ...currentDocument.value, tags: doc.tags };
+    }
+  }
+
+  function setSearchScrollTarget(query: string | null): void {
+    searchScrollTarget.value = query;
+  }
+
   async function getBacklinks(
     documentId: string,
   ): Promise<{ sourceId: string; sourceTitle: string; occurrences: number }[]> {
@@ -371,8 +487,10 @@ export const useDocumentStore = defineStore("document", () => {
     currentContent,
     snapshots,
     isInitialized,
+    searchScrollTarget,
     documentsMap,
     documentTitles,
+    allTags,
     initialize,
     createDocument,
     openDocument,
@@ -383,7 +501,11 @@ export const useDocumentStore = defineStore("document", () => {
     uploadImage,
     getImageUrl,
     searchDocuments,
+    fullTextSearch,
     findDocumentByTitle,
+    addTag,
+    removeTag,
+    setSearchScrollTarget,
     getBacklinks,
     getGraphData,
     importDocuments,
