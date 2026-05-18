@@ -19,7 +19,6 @@ import {
   getImage,
   getAllImages,
 } from "../utils/db";
-import Fuse from "fuse.js";
 
 export const useDocumentStore = defineStore("document", () => {
   const documents = ref<DocumentMeta[]>([]);
@@ -36,6 +35,34 @@ export const useDocumentStore = defineStore("document", () => {
 
   const documentTitles = computed(() => {
     return documents.value.map((doc) => doc.title);
+  });
+
+  /** 当前搜索关键词（全文搜索）。 */
+  const searchQuery = ref("");
+  /** 当前搜索结果（全文搜索）。 */
+  const searchResults = ref<SearchResult[]>([]);
+
+  /** 当前标签过滤值（null 表示不过滤）。 */
+  const tagFilter = ref<string | null>(null);
+
+  /** 按标签过滤后的文档列表。 */
+  const filteredDocuments = computed(() => {
+    if (!tagFilter.value) return documents.value;
+    const tag = tagFilter.value.trim();
+    if (!tag) return documents.value;
+    return documents.value.filter((doc) => doc.tags.includes(tag));
+  });
+
+  /** 所有文档的去重标签集合（按字典序排序）。 */
+  const allTags = computed(() => {
+    const tagSet = new Set<string>();
+    for (const doc of documents.value) {
+      for (const tag of doc.tags) {
+        const trimmed = tag.trim();
+        if (trimmed) tagSet.add(trimmed);
+      }
+    }
+    return Array.from(tagSet).sort((a, b) => a.localeCompare(b));
   });
 
   async function initialize() {
@@ -172,50 +199,115 @@ export const useDocumentStore = defineStore("document", () => {
     return URL.createObjectURL(image.blob);
   }
 
+  /**
+   * 按关键词搜索文档（历史兼容入口）。
+   * 现统一委托给 `performFullTextSearch` 实现。
+   */
   async function searchDocuments(query: string): Promise<SearchResult[]> {
-    if (!query.trim()) return [];
-
-    const fuse = new Fuse(documents.value, {
-      keys: ["title", "tags", "path"],
-      includeScore: true,
-      includeMatches: true,
-      threshold: 0.4,
-    });
-
-    const results = fuse.search(query);
-
-    return await Promise.all(
-      results.map(async (result) => {
-        const content = (await getDocFromDB(result.item.id)) || "";
-        const snippet = extractSnippet(content, query);
-
-        return {
-          document: result.item,
-          snippet,
-          score: result.score || 1,
-          matches: {
-            indices: (result.matches || []).flatMap((m) => m.indices || []),
-          },
-        };
-      }),
-    );
+    return performFullTextSearch(query);
   }
 
-  function extractSnippet(content: string, query: string): string {
-    const lowerContent = content.toLowerCase();
-    const lowerQuery = query.toLowerCase();
-    const index = lowerContent.indexOf(lowerQuery);
-
-    if (index === -1) {
-      return content.substring(0, 200) + (content.length > 200 ? "..." : "");
+  /**
+   * 对所有文档进行全文搜索（标题 / 标签 / 正文）。
+   * 会同步更新 store 中的 `searchQuery` 与 `searchResults`。
+   */
+  async function performFullTextSearch(query: string): Promise<SearchResult[]> {
+    if (!query.trim()) {
+      searchQuery.value = "";
+      searchResults.value = [];
+      return [];
     }
 
-    const start = Math.max(0, index - 50);
-    const end = Math.min(content.length, index + query.length + 50);
-    const snippet = content.substring(start, end);
+    const lowerQuery = query.toLowerCase();
+    const results: SearchResult[] = [];
+
+    for (const doc of documents.value) {
+      const titleIndices = collectMatchIndices(doc.title || "", lowerQuery);
+      const tagIndices: [number, number][] = [];
+      for (const tag of doc.tags) {
+        tagIndices.push(...collectMatchIndices(tag || "", lowerQuery));
+      }
+      const content = (await getDocFromDB(doc.id)) || "";
+      const contentIndices = collectMatchIndices(content, lowerQuery);
+
+      if (
+        titleIndices.length === 0 &&
+        tagIndices.length === 0 &&
+        contentIndices.length === 0
+      ) {
+        continue;
+      }
+
+      let snippet = "";
+      if (contentIndices.length > 0) {
+        snippet = buildSnippet(content, contentIndices[0], lowerQuery.length);
+      } else if (titleIndices.length > 0) {
+        snippet = buildSnippet(
+          doc.title || "",
+          titleIndices[0],
+          lowerQuery.length,
+        );
+      } else {
+        const firstTagWithMatch = doc.tags.find((tag) =>
+          tag.toLowerCase().includes(lowerQuery),
+        );
+        snippet = firstTagWithMatch || "";
+      }
+
+      results.push({
+        document: doc,
+        snippet,
+        score: 1,
+        matches: {
+          indices: [...titleIndices, ...tagIndices, ...contentIndices],
+        },
+      });
+    }
+
+    searchQuery.value = query;
+    searchResults.value = results;
+    return results;
+  }
+
+  /** 收集关键词在文本中的所有命中区间（大小写不敏感）。 */
+  function collectMatchIndices(
+    text: string,
+    lowerQuery: string,
+  ): [number, number][] {
+    if (!text || !lowerQuery) return [];
+
+    const lowerText = text.toLowerCase();
+    const indices: [number, number][] = [];
+    let cursor = 0;
+
+    while (cursor < lowerText.length) {
+      const idx = lowerText.indexOf(lowerQuery, cursor);
+      if (idx === -1) break;
+      indices.push([idx, idx + lowerQuery.length - 1]);
+      cursor = idx + lowerQuery.length;
+    }
+
+    return indices;
+  }
+
+  /**
+   * 根据命中区间构建片段（在命中前后各取一定长度窗口）。
+   */
+  function buildSnippet(
+    text: string,
+    matchRange: [number, number],
+    matchLength: number,
+  ): string {
+    const [start] = matchRange;
+    const windowSize = 60;
+    const snippetStart = Math.max(0, start - windowSize);
+    const snippetEnd = Math.min(text.length, start + matchLength + windowSize);
+    const snippet = text.substring(snippetStart, snippetEnd);
 
     return (
-      (start > 0 ? "..." : "") + snippet + (end < content.length ? "..." : "")
+      (snippetStart > 0 ? "..." : "") +
+      snippet +
+      (snippetEnd < text.length ? "..." : "")
     );
   }
 
@@ -223,6 +315,102 @@ export const useDocumentStore = defineStore("document", () => {
     return documents.value.find(
       (d) => d.title.toLowerCase() === title.toLowerCase(),
     );
+  }
+
+  /**
+   * 根据标签名生成稳定的 HSL 颜色。
+   * 通过标签名的哈希作为 HSL 的 hue，保证同标签颜色一致。
+   */
+  function getTagColor(tag: string): string {
+    const normalized = tag.trim().toLowerCase();
+    let hash = 0;
+    for (let i = 0; i < normalized.length; i++) {
+      hash = (hash * 31 + normalized.charCodeAt(i)) | 0;
+    }
+    const hue = Math.abs(hash) % 360;
+    const saturation = 60 + (Math.abs(hash >> 3) % 20);
+    const lightness = 45 + (Math.abs(hash >> 5) % 15);
+    return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+  }
+
+  /**
+   * 从正文内容中提取 `#tag` 形式的标签。
+   * 支持空格或行首分隔符，如 `#abc #def` 会被识别为两个标签。
+   */
+  function extractTagsFromText(text: string): string[] {
+    if (!text) return [];
+    const matches = text.match(/(?:^|\s)#([^\s#]+)/g);
+    if (!matches) return [];
+    return Array.from(new Set(matches.map((m) => m.trim().slice(1))));
+  }
+
+  /** 获取指定文档的标签列表（副本）。 */
+  function getDocumentTags(id: string): string[] {
+    const doc = documents.value.find((d) => d.id === id);
+    return doc ? [...doc.tags] : [];
+  }
+
+  /** 为指定文档添加标签（会去重并同步持久化）。 */
+  async function addTag(id: string, tag: string): Promise<void> {
+    const trimmed = tag.trim();
+    if (!trimmed) return;
+
+    const doc = documents.value.find((d) => d.id === id);
+    if (!doc) return;
+    if (doc.tags.includes(trimmed)) return;
+
+    const tags = [...doc.tags, trimmed];
+    updateDocument(id, { tags });
+    doc.tags = tags;
+
+    if (currentDocument.value?.id === id) {
+      currentDocument.value = { ...currentDocument.value, tags };
+    }
+  }
+
+  /** 从指定文档移除标签并同步持久化。 */
+  async function removeTag(id: string, tag: string): Promise<void> {
+    const trimmed = tag.trim();
+    if (!trimmed) return;
+
+    const doc = documents.value.find((d) => d.id === id);
+    if (!doc) return;
+
+    const tags = doc.tags.filter((t) => t !== trimmed);
+    updateDocument(id, { tags });
+    doc.tags = tags;
+
+    if (currentDocument.value?.id === id) {
+      currentDocument.value = { ...currentDocument.value, tags };
+    }
+  }
+
+  /**
+   * 根据正文内容同步文档标签。
+   * 将正文中的 `#tag` 集合作为文档的 tags（会覆盖）。
+   */
+  async function syncTagsFromContent(id: string): Promise<string[]> {
+    const doc = documents.value.find((d) => d.id === id);
+    if (!doc) return [];
+    const content = (await getDocFromDB(id)) || "";
+    const extracted = extractTagsFromText(content);
+    updateDocument(id, { tags: extracted });
+    doc.tags = extracted;
+    if (currentDocument.value?.id === id) {
+      currentDocument.value = { ...currentDocument.value, tags: extracted };
+    }
+    return extracted;
+  }
+
+  /** 设置当前的标签过滤值（传空值会清除过滤）。 */
+  function setTagFilter(tag: string | null) {
+    tagFilter.value = tag ? tag.trim() : null;
+  }
+
+  /** 清空搜索关键词与搜索结果。 */
+  function clearSearch() {
+    searchQuery.value = "";
+    searchResults.value = [];
   }
 
   async function getBacklinks(
@@ -373,6 +561,11 @@ export const useDocumentStore = defineStore("document", () => {
     isInitialized,
     documentsMap,
     documentTitles,
+    searchQuery,
+    searchResults,
+    tagFilter,
+    filteredDocuments,
+    allTags,
     initialize,
     createDocument,
     openDocument,
@@ -383,7 +576,16 @@ export const useDocumentStore = defineStore("document", () => {
     uploadImage,
     getImageUrl,
     searchDocuments,
+    performFullTextSearch,
     findDocumentByTitle,
+    getTagColor,
+    extractTagsFromText,
+    getDocumentTags,
+    addTag,
+    removeTag,
+    syncTagsFromContent,
+    setTagFilter,
+    clearSearch,
     getBacklinks,
     getGraphData,
     importDocuments,
