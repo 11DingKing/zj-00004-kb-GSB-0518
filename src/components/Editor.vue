@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, onBeforeUnmount } from "vue";
+import { ref, computed, onMounted, watch, onBeforeUnmount, nextTick } from "vue";
 import { useDocumentStore } from "../stores/document";
 import { EditorState } from "@codemirror/state";
 import {
@@ -15,13 +15,49 @@ import { languages } from "@codemirror/language-data";
 import { autocompletion, completionKeymap } from "@codemirror/autocomplete";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { renderMarkdown } from "../utils/markdown";
+import { tagColor, tagColorDark } from "../types";
 
 const documentStore = useDocumentStore();
 
 const editorContainer = ref<HTMLDivElement | null>(null);
 const previewContainer = ref<HTMLDivElement | null>(null);
+/** 新标签输入框的值 */
+const newTagInput = ref("");
 let editorView: EditorView | null = null;
 let isDark = document.documentElement.classList.contains("dark");
+
+/** 当前文档的标签列表，响应式跟随 currentDocument 变化 */
+const currentTags = computed(() => {
+  return documentStore.currentDocument?.tags || [];
+});
+
+/** 当前是否为暗色模式，用于动态切换标签颜色 */
+const isDarkMode = computed(() => document.documentElement.classList.contains("dark"));
+
+/** 根据标签名生成 HSL 色轮背景色样式对象，自动适配暗色/亮色模式 */
+const getTagStyle = (tag: string) => {
+  return {
+    backgroundColor: isDarkMode.value ? tagColorDark(tag) : tagColor(tag),
+  };
+};
+
+/** 将输入框中的标签添加到当前文档，自动去重并清空输入框 */
+const addTag = () => {
+  const tag = newTagInput.value.trim();
+  if (!tag || !documentStore.currentDocument) return;
+  if (currentTags.value.includes(tag)) {
+    newTagInput.value = "";
+    return;
+  }
+  documentStore.addTag(documentStore.currentDocument.id, tag);
+  newTagInput.value = "";
+};
+
+/** 从当前文档移除指定标签 */
+const removeTag = (tag: string) => {
+  if (!documentStore.currentDocument) return;
+  documentStore.removeTag(documentStore.currentDocument.id, tag);
+};
 
 const linkCompletion = (context: {
   state: EditorState;
@@ -82,6 +118,26 @@ const handleDrop = async (e: DragEvent) => {
 
 const handleDragOver = (e: DragEvent) => {
   e.preventDefault();
+};
+
+/** 根据 searchScrollTarget 在编辑器中定位到首个匹配位置并滚动选中，完成后清除目标 */
+const scrollToSearchMatch = () => {
+  const query = documentStore.searchScrollTarget;
+  if (!query || !editorView) return;
+
+  const content = editorView.state.doc.toString();
+  const lowerContent = content.toLowerCase();
+  const lowerQuery = query.toLowerCase();
+  const idx = lowerContent.indexOf(lowerQuery);
+
+  if (idx !== -1) {
+    editorView.dispatch({
+      selection: { anchor: idx },
+      scrollIntoView: true,
+    });
+  }
+
+  documentStore.setSearchScrollTarget(null);
 };
 
 const setupEditor = () => {
@@ -146,6 +202,17 @@ watch(
   },
 );
 
+/** 监听搜索跳转目标变化，有新目标时等待 DOM 更新后滚动到匹配位置 */
+watch(
+  () => documentStore.searchScrollTarget,
+  async (target) => {
+    if (target) {
+      await nextTick();
+      scrollToSearchMatch();
+    }
+  },
+);
+
 onMounted(() => {
   isDark = document.documentElement.classList.contains("dark");
   setupEditor();
@@ -157,13 +224,97 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="editor-container">
-    <div ref="editorContainer" class="editor-pane"></div>
-    <div ref="previewContainer" class="preview-pane"></div>
+  <div class="editor-wrapper">
+    <div v-if="documentStore.currentDocument" class="tag-bar">
+      <div class="tag-list">
+        <span
+          v-for="tag in currentTags"
+          :key="tag"
+          class="tag-chip"
+          :style="getTagStyle(tag)"
+        >
+          {{ tag }}
+          <button class="tag-remove" @click="removeTag(tag)">✕</button>
+        </span>
+        <input
+          v-model="newTagInput"
+          class="tag-input"
+          placeholder="添加标签..."
+          @keyup.enter="addTag"
+        />
+      </div>
+    </div>
+    <div class="editor-container">
+      <div ref="editorContainer" class="editor-pane"></div>
+      <div ref="previewContainer" class="preview-pane"></div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.editor-wrapper {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+.tag-bar {
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  background: var(--sidebar-bg);
+}
+
+.tag-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.tag-remove {
+  border: none;
+  background: transparent;
+  padding: 0 2px;
+  font-size: 0.65rem;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.6;
+  line-height: 1;
+}
+
+.tag-remove:hover {
+  opacity: 1;
+}
+
+.tag-input {
+  border: none;
+  background: transparent;
+  padding: 2px 6px;
+  font-size: 0.75rem;
+  min-width: 80px;
+  max-width: 140px;
+}
+
+.tag-input:focus {
+  outline: none;
+}
+
 .editor-container {
   display: flex;
   flex: 1;

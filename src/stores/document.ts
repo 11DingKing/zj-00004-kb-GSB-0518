@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import type { DocumentMeta, Snapshot, SearchResult } from "../types";
+import type { DocumentMeta, Snapshot, FullTextSearchResult } from "../types";
 import {
   generateId,
   getDocuments,
@@ -19,7 +19,6 @@ import {
   getImage,
   getAllImages,
 } from "../utils/db";
-import Fuse from "fuse.js";
 
 export const useDocumentStore = defineStore("document", () => {
   const documents = ref<DocumentMeta[]>([]);
@@ -27,6 +26,8 @@ export const useDocumentStore = defineStore("document", () => {
   const currentContent = ref("");
   const snapshots = ref<Snapshot[]>([]);
   const isInitialized = ref(false);
+  /** 搜索跳转目标关键词，编辑器打开文档后自动滚动到首个匹配位置 */
+  const searchScrollTarget = ref<string | null>(null);
 
   const documentsMap = computed(() => {
     const map = new Map<string, DocumentMeta>();
@@ -36,6 +37,15 @@ export const useDocumentStore = defineStore("document", () => {
 
   const documentTitles = computed(() => {
     return documents.value.map((doc) => doc.title);
+  });
+
+  /** 收集所有文档中出现过的标签，去重后按字母排序 */
+  const allTags = computed(() => {
+    const tagSet = new Set<string>();
+    documents.value.forEach((doc) => {
+      doc.tags.forEach((tag) => tagSet.add(tag));
+    });
+    return Array.from(tagSet).sort();
   });
 
   async function initialize() {
@@ -172,35 +182,6 @@ export const useDocumentStore = defineStore("document", () => {
     return URL.createObjectURL(image.blob);
   }
 
-  async function searchDocuments(query: string): Promise<SearchResult[]> {
-    if (!query.trim()) return [];
-
-    const fuse = new Fuse(documents.value, {
-      keys: ["title", "tags", "path"],
-      includeScore: true,
-      includeMatches: true,
-      threshold: 0.4,
-    });
-
-    const results = fuse.search(query);
-
-    return await Promise.all(
-      results.map(async (result) => {
-        const content = (await getDocFromDB(result.item.id)) || "";
-        const snippet = extractSnippet(content, query);
-
-        return {
-          document: result.item,
-          snippet,
-          score: result.score || 1,
-          matches: {
-            indices: (result.matches || []).flatMap((m) => m.indices || []),
-          },
-        };
-      }),
-    );
-  }
-
   function extractSnippet(content: string, query: string): string {
     const lowerContent = content.toLowerCase();
     const lowerQuery = query.toLowerCase();
@@ -223,6 +204,116 @@ export const useDocumentStore = defineStore("document", () => {
     return documents.value.find(
       (d) => d.title.toLowerCase() === title.toLowerCase(),
     );
+  }
+
+  /**
+   * 全文搜索：遍历所有文档的标题和正文内容，大小写不敏感匹配，
+   * 返回带高亮片段和匹配位置的结果，按评分排序
+   */
+  async function fullTextSearch(
+    query: string,
+  ): Promise<FullTextSearchResult[]> {
+    if (!query.trim()) return [];
+
+    const lowerQuery = query.toLowerCase();
+    const results: FullTextSearchResult[] = [];
+
+    for (const doc of documents.value) {
+      const titleMatch = doc.title.toLowerCase().includes(lowerQuery);
+      const content = (await getDocFromDB(doc.id)) || "";
+      const lowerContent = content.toLowerCase();
+
+      const contentMatchIndex = lowerContent.indexOf(lowerQuery);
+      if (!titleMatch && contentMatchIndex === -1) continue;
+
+      const matchPositions: number[] = [];
+      let searchFrom = 0;
+      while (searchFrom < lowerContent.length) {
+        const idx = lowerContent.indexOf(lowerQuery, searchFrom);
+        if (idx === -1) break;
+        matchPositions.push(idx);
+        searchFrom = idx + 1;
+      }
+
+      const snippet = extractSnippet(content, query);
+      const highlightedSnippet = highlightSnippet(content, query);
+
+      let score = 1.0;
+      if (titleMatch) score -= 0.4;
+      score -= matchPositions.length * 0.05;
+      score = Math.max(0, score);
+
+      results.push({
+        document: doc,
+        snippet,
+        highlightedSnippet,
+        matchPositions,
+        score,
+      });
+    }
+
+    results.sort((a, b) => a.score - b.score);
+    return results;
+  }
+
+  /** 在内容片段中找到匹配位置并用 <mark> 标签包裹，返回带 HTML 高亮的摘要 */
+  function highlightSnippet(content: string, query: string): string {
+    const lowerContent = content.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    const idx = lowerContent.indexOf(lowerQuery);
+    if (idx === -1) {
+      const text = content.substring(0, 200);
+      return escapeHtml(text) + (content.length > 200 ? "..." : "");
+    }
+
+    const start = Math.max(0, idx - 60);
+    const end = Math.min(content.length, idx + query.length + 60);
+    const before = content.substring(start, idx);
+    const match = content.substring(idx, idx + query.length);
+    const after = content.substring(idx + query.length, end);
+
+    let result = "";
+    if (start > 0) result += "...";
+    result += escapeHtml(before);
+    result += `<mark class="search-highlight">${escapeHtml(match)}</mark>`;
+    result += escapeHtml(after);
+    if (end < content.length) result += "...";
+    return result;
+  }
+
+  function escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  /** 为指定文档添加标签，自动去重并持久化到 localStorage */
+  async function addTag(documentId: string, tag: string): Promise<void> {
+    const doc = documents.value.find((d) => d.id === documentId);
+    if (!doc || doc.tags.includes(tag)) return;
+    doc.tags = [...doc.tags, tag];
+    updateDocument(documentId, { tags: doc.tags });
+    if (currentDocument.value?.id === documentId) {
+      currentDocument.value = { ...currentDocument.value, tags: doc.tags };
+    }
+  }
+
+  /** 从指定文档移除标签并持久化到 localStorage */
+  async function removeTag(documentId: string, tag: string): Promise<void> {
+    const doc = documents.value.find((d) => d.id === documentId);
+    if (!doc) return;
+    doc.tags = doc.tags.filter((t) => t !== tag);
+    updateDocument(documentId, { tags: doc.tags });
+    if (currentDocument.value?.id === documentId) {
+      currentDocument.value = { ...currentDocument.value, tags: doc.tags };
+    }
+  }
+
+  /** 设置搜索跳转目标，编辑器监听此值后滚动到首个匹配位置 */
+  function setSearchScrollTarget(query: string | null): void {
+    searchScrollTarget.value = query;
   }
 
   async function getBacklinks(
@@ -371,8 +462,10 @@ export const useDocumentStore = defineStore("document", () => {
     currentContent,
     snapshots,
     isInitialized,
+    searchScrollTarget,
     documentsMap,
     documentTitles,
+    allTags,
     initialize,
     createDocument,
     openDocument,
@@ -382,8 +475,11 @@ export const useDocumentStore = defineStore("document", () => {
     restoreSnapshot,
     uploadImage,
     getImageUrl,
-    searchDocuments,
+    fullTextSearch,
     findDocumentByTitle,
+    addTag,
+    removeTag,
+    setSearchScrollTarget,
     getBacklinks,
     getGraphData,
     importDocuments,

@@ -18,7 +18,7 @@ let simulation: any = null;
 
 const handleSearch = async () => {
   if (searchQuery.value.trim()) {
-    searchResults.value = await documentStore.searchDocuments(
+    searchResults.value = await documentStore.fullTextSearch(
       searchQuery.value,
     );
   } else {
