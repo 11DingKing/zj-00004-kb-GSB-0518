@@ -16,10 +16,22 @@ const editingTitle = ref('')
 const draggedItem = ref<string | null>(null)
 
 const sortedDocuments = computed(() => {
-  return [...documentStore.documents].sort((a, b) => 
+  const source = documentStore.tagFilter
+    ? documentStore.filteredDocuments
+    : documentStore.documents
+  return [...source].sort((a, b) =>
     a.title.localeCompare(b.title)
   )
 })
+
+const tagFilterLabel = computed(() => {
+  return documentStore.tagFilter || ""
+})
+
+const handleTagFilterChange = (event: Event) => {
+  const select = event.target as HTMLSelectElement
+  documentStore.setTagFilter(select.value)
+}
 
 const handleContextMenu = (e: MouseEvent, documentId?: string) => {
   e.preventDefault()
@@ -110,6 +122,18 @@ const handleDrop = (e: DragEvent) => {
   >
     <div class="tree-header">
       <h3>文档目录</h3>
+      <select
+        class="tag-filter"
+        :value="tagFilterLabel"
+        @change="handleTagFilterChange"
+      >
+        <option value="">按标签过滤</option>
+        <option
+          v-for="tag in documentStore.allTags"
+          :key="tag"
+          :value="tag"
+        >#{{ tag }}</option>
+      </select>
     </div>
     <div class="tree-items">
       <div
@@ -170,12 +194,20 @@ const handleDrop = (e: DragEvent) => {
 .tree-header {
   padding: 12px;
   border-bottom: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .tree-header h3 {
   margin: 0;
   font-size: 1rem;
   font-weight: 600;
+}
+
+.tag-filter {
+  padding: 4px 8px;
+  font-size: 0.85rem;
 }
 
 .tree-items {

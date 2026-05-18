@@ -38,6 +38,29 @@ export const useDocumentStore = defineStore("document", () => {
     return documents.value.map((doc) => doc.title);
   });
 
+  const searchQuery = ref("");
+  const searchResults = ref<SearchResult[]>([]);
+
+  const tagFilter = ref<string | null>(null);
+
+  const filteredDocuments = computed(() => {
+    if (!tagFilter.value) return documents.value;
+    const tag = tagFilter.value.trim();
+    if (!tag) return documents.value;
+    return documents.value.filter((doc) => doc.tags.includes(tag));
+  });
+
+  const allTags = computed(() => {
+    const tagSet = new Set<string>();
+    for (const doc of documents.value) {
+      for (const tag of doc.tags) {
+        const trimmed = tag.trim();
+        if (trimmed) tagSet.add(trimmed);
+      }
+    }
+    return Array.from(tagSet).sort((a, b) => a.localeCompare(b));
+  });
+
   async function initialize() {
     if (isInitialized.value) return;
 
@@ -183,22 +206,101 @@ export const useDocumentStore = defineStore("document", () => {
     });
 
     const results = fuse.search(query);
+    const lowerQuery = query.toLowerCase();
 
     return await Promise.all(
       results.map(async (result) => {
         const content = (await getDocFromDB(result.item.id)) || "";
         const snippet = extractSnippet(content, query);
+        const contentIndices = collectMatchIndices(content, lowerQuery);
+
+        const titleStart = (result.item.title || "")
+          .toLowerCase()
+          .indexOf(lowerQuery);
+        const titleIndices: [number, number][] =
+          titleStart !== -1
+            ? [[titleStart, titleStart + query.length - 1]]
+            : [];
+
+        const tagIndices: [number, number][] = [];
+        for (const tag of result.item.tags) {
+          const t = (tag || "").toLowerCase();
+          const idx = t.indexOf(lowerQuery);
+          if (idx !== -1) {
+            tagIndices.push([idx, idx + query.length - 1]);
+          }
+        }
+
+        const allIndices = [...titleIndices, ...tagIndices, ...contentIndices];
 
         return {
           document: result.item,
           snippet,
           score: result.score || 1,
           matches: {
-            indices: (result.matches || []).flatMap((m) => m.indices || []),
+            indices: allIndices,
           },
         };
       }),
     );
+  }
+
+  async function performFullTextSearch(query: string): Promise<SearchResult[]> {
+    if (!query.trim()) {
+      searchQuery.value = "";
+      searchResults.value = [];
+      return [];
+    }
+
+    const lowerQuery = query.toLowerCase();
+    const results: SearchResult[] = [];
+
+    for (const doc of documents.value) {
+      const titleIndices = collectMatchIndices(doc.title || "", lowerQuery);
+      const tagIndices: [number, number][] = [];
+      for (const tag of doc.tags) {
+        tagIndices.push(...collectMatchIndices(tag || "", lowerQuery));
+      }
+      const content = (await getDocFromDB(doc.id)) || "";
+      const contentIndices = collectMatchIndices(content, lowerQuery);
+
+      if (
+        titleIndices.length === 0 &&
+        tagIndices.length === 0 &&
+        contentIndices.length === 0
+      ) {
+        continue;
+      }
+
+      let snippet = "";
+      if (contentIndices.length > 0) {
+        snippet = buildSnippet(content, contentIndices[0], lowerQuery.length);
+      } else if (titleIndices.length > 0) {
+        snippet = buildSnippet(
+          doc.title || "",
+          titleIndices[0],
+          lowerQuery.length,
+        );
+      } else {
+        const firstTagWithMatch = doc.tags.find((tag) =>
+          tag.toLowerCase().includes(lowerQuery),
+        );
+        snippet = firstTagWithMatch || "";
+      }
+
+      results.push({
+        document: doc,
+        snippet,
+        score: 1,
+        matches: {
+          indices: [...titleIndices, ...tagIndices, ...contentIndices],
+        },
+      });
+    }
+
+    searchQuery.value = query;
+    searchResults.value = results;
+    return results;
   }
 
   function extractSnippet(content: string, query: string): string {
@@ -219,10 +321,127 @@ export const useDocumentStore = defineStore("document", () => {
     );
   }
 
+  function collectMatchIndices(
+    text: string,
+    lowerQuery: string,
+  ): [number, number][] {
+    if (!text || !lowerQuery) return [];
+
+    const lowerText = text.toLowerCase();
+    const indices: [number, number][] = [];
+    let cursor = 0;
+
+    while (cursor < lowerText.length) {
+      const idx = lowerText.indexOf(lowerQuery, cursor);
+      if (idx === -1) break;
+      indices.push([idx, idx + lowerQuery.length - 1]);
+      cursor = idx + lowerQuery.length;
+    }
+
+    return indices;
+  }
+
+  function buildSnippet(
+    text: string,
+    matchRange: [number, number],
+    matchLength: number,
+  ): string {
+    const [start] = matchRange;
+    const windowSize = 60;
+    const snippetStart = Math.max(0, start - windowSize);
+    const snippetEnd = Math.min(text.length, start + matchLength + windowSize);
+    const snippet = text.substring(snippetStart, snippetEnd);
+
+    return (
+      (snippetStart > 0 ? "..." : "") +
+      snippet +
+      (snippetEnd < text.length ? "..." : "")
+    );
+  }
+
   function findDocumentByTitle(title: string): DocumentMeta | undefined {
     return documents.value.find(
       (d) => d.title.toLowerCase() === title.toLowerCase(),
     );
+  }
+
+  function getTagColor(tag: string): string {
+    const normalized = tag.trim().toLowerCase();
+    let hash = 0;
+    for (let i = 0; i < normalized.length; i++) {
+      hash = (hash * 31 + normalized.charCodeAt(i)) | 0;
+    }
+    const hue = Math.abs(hash) % 360;
+    const saturation = 60 + (Math.abs(hash >> 3) % 20);
+    const lightness = 45 + (Math.abs(hash >> 5) % 15);
+    return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+  }
+
+  function extractTagsFromText(text: string): string[] {
+    if (!text) return [];
+    const matches = text.match(/(?:^|\s)#([^\s#]+)/g);
+    if (!matches) return [];
+    return Array.from(new Set(matches.map((m) => m.trim().slice(1))));
+  }
+
+  function getDocumentTags(id: string): string[] {
+    const doc = documents.value.find((d) => d.id === id);
+    return doc ? [...doc.tags] : [];
+  }
+
+  async function addTag(id: string, tag: string): Promise<void> {
+    const trimmed = tag.trim();
+    if (!trimmed) return;
+
+    const doc = documents.value.find((d) => d.id === id);
+    if (!doc) return;
+    if (doc.tags.includes(trimmed)) return;
+
+    const tags = [...doc.tags, trimmed];
+    updateDocument(id, { tags });
+    doc.tags = tags;
+
+    if (currentDocument.value?.id === id) {
+      currentDocument.value = { ...currentDocument.value, tags };
+    }
+  }
+
+  async function removeTag(id: string, tag: string): Promise<void> {
+    const trimmed = tag.trim();
+    if (!trimmed) return;
+
+    const doc = documents.value.find((d) => d.id === id);
+    if (!doc) return;
+
+    const tags = doc.tags.filter((t) => t !== trimmed);
+    updateDocument(id, { tags });
+    doc.tags = tags;
+
+    if (currentDocument.value?.id === id) {
+      currentDocument.value = { ...currentDocument.value, tags };
+    }
+  }
+
+  async function syncTagsFromContent(id: string): Promise<string[]> {
+    const doc = documents.value.find((d) => d.id === id);
+    if (!doc) return [];
+    const content = (await getDocFromDB(id)) || "";
+    const extracted = extractTagsFromText(content);
+    updateDocument(id, { tags: extracted });
+    doc.tags = extracted;
+    if (currentDocument.value?.id === id) {
+      currentDocument.value = { ...currentDocument.value, tags: extracted };
+    }
+    return extracted;
+  }
+
+  function setTagFilter(tag: string | null) {
+    tagFilter.value = tag ? tag.trim() : null;
+  }
+
+  function clearSearch() {
+    searchQuery.value = "";
+    searchResults.value = [];
   }
 
   async function getBacklinks(
@@ -373,6 +592,11 @@ export const useDocumentStore = defineStore("document", () => {
     isInitialized,
     documentsMap,
     documentTitles,
+    searchQuery,
+    searchResults,
+    tagFilter,
+    filteredDocuments,
+    allTags,
     initialize,
     createDocument,
     openDocument,
@@ -383,7 +607,16 @@ export const useDocumentStore = defineStore("document", () => {
     uploadImage,
     getImageUrl,
     searchDocuments,
+    performFullTextSearch,
     findDocumentByTitle,
+    getTagColor,
+    extractTagsFromText,
+    getDocumentTags,
+    addTag,
+    removeTag,
+    syncTagsFromContent,
+    setTagFilter,
+    clearSearch,
     getBacklinks,
     getGraphData,
     importDocuments,

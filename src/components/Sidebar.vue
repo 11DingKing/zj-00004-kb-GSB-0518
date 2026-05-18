@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
+import { ref, watch, onMounted, onBeforeUnmount, nextTick, computed } from "vue";
 import { useRouter } from "vue-router";
 import { useDocumentStore } from "../stores/document";
 import * as d3 from "d3";
@@ -8,37 +8,76 @@ const router = useRouter();
 const documentStore = useDocumentStore();
 
 const activeTab = ref<"search" | "backlinks" | "graph" | "snapshots">("search");
-const searchQuery = ref("");
-const searchResults = ref<any[]>([]);
 const backlinks = ref<any[]>([]);
 
 const graphContainer = ref<HTMLDivElement | null>(null);
 let svg: any = null;
 let simulation: any = null;
 
+const fullTextResults = computed(() => documentStore.searchResults);
+const fullTextQuery = computed(() => documentStore.searchQuery);
+
 const handleSearch = async () => {
-  if (searchQuery.value.trim()) {
-    searchResults.value = await documentStore.searchDocuments(
-      searchQuery.value,
-    );
+  const value = documentStore.searchQuery.trim();
+  if (value) {
+    await documentStore.performFullTextSearch(value);
   } else {
-    searchResults.value = [];
+    documentStore.clearSearch();
   }
 };
 
 watch(
-  () => documentStore.currentDocument?.id,
-  async (id) => {
-    if (id) {
-      backlinks.value = await documentStore.getBacklinks(id);
-    }
+  () => documentStore.searchQuery,
+  async () => {
+    await handleSearch();
   },
-  { immediate: true },
 );
 
 const handleOpenDocument = (id: string) => {
   router.push(`/doc/${id}`);
 };
+
+interface HighlightSegment {
+  text: string;
+  highlight: boolean;
+}
+
+function buildHighlightSegments(
+  text: string,
+  query: string,
+): HighlightSegment[] {
+  const safeQuery = (query || "").trim();
+  if (!safeQuery || !text) {
+    return [{ text: text || "", highlight: false }];
+  }
+
+  const lowerText = text.toLowerCase();
+  const lowerQuery = safeQuery.toLowerCase();
+  const segments: HighlightSegment[] = [];
+  let cursor = 0;
+
+  while (cursor < lowerText.length) {
+    const idx = lowerText.indexOf(lowerQuery, cursor);
+    if (idx === -1) {
+      segments.push({ text: text.substring(cursor), highlight: false });
+      break;
+    }
+
+    if (idx > cursor) {
+      segments.push({
+        text: text.substring(cursor, idx),
+        highlight: false,
+      });
+    }
+    segments.push({
+      text: text.substring(idx, idx + safeQuery.length),
+      highlight: true,
+    });
+    cursor = idx + safeQuery.length;
+  }
+
+  return segments;
+}
 
 const handleRestoreSnapshot = async (snapshot: any) => {
   if (confirm("确定要恢复到此版本吗？当前内容将先保存为快照。")) {
@@ -185,6 +224,14 @@ onMounted(() => {
 
 <template>
   <div class="sidebar">
+    <div class="search-top">
+      <input
+        v-model="documentStore.searchQuery"
+        placeholder="全文搜索：标题 / 正文 / 标签"
+        @input="handleSearch"
+      />
+    </div>
+
     <div class="tabs">
       <button
         v-for="tab in ['search', 'backlinks', 'graph', 'snapshots']"
@@ -206,23 +253,36 @@ onMounted(() => {
 
     <div class="tab-content">
       <div v-if="activeTab === 'search'" class="search-panel">
-        <input
-          v-model="searchQuery"
-          placeholder="搜索文档..."
-          @input="handleSearch"
-        />
         <div class="results">
           <div
-            v-for="result in searchResults"
+            v-for="result in fullTextResults"
             :key="result.document.id"
             class="result-item"
             @click="handleOpenDocument(result.document.id)"
           >
-            <div class="result-title">{{ result.document.title }}</div>
-            <div class="result-snippet">{{ result.snippet }}</div>
+            <div class="result-title">
+              <span
+                v-for="(segment, index) in buildHighlightSegments(
+                  result.document.title,
+                  fullTextQuery
+                )"
+                :key="index"
+                :class="{ highlight: segment.highlight }"
+              >{{ segment.text }}</span>
+            </div>
+            <div class="result-snippet">
+              <span
+                v-for="(segment, index) in buildHighlightSegments(
+                  result.snippet,
+                  fullTextQuery
+                )"
+                :key="index"
+                :class="{ highlight: segment.highlight }"
+              >{{ segment.text }}</span>
+            </div>
           </div>
           <div
-            v-if="searchQuery && searchResults.length === 0"
+            v-if="fullTextQuery && fullTextResults.length === 0"
             class="no-results"
           >
             未找到匹配的文档
@@ -272,6 +332,22 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.search-top {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.search-top input {
+  width: 100%;
+}
+
+.highlight {
+  background-color: #fff3a3;
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
 }
 
 .tabs {

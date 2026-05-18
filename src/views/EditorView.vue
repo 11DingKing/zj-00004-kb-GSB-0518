@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDocumentStore } from '../stores/document'
 import TreeView from '../components/TreeView.vue'
@@ -12,7 +12,26 @@ const router = useRouter()
 const documentStore = useDocumentStore()
 
 const showSidebar = ref(true)
+const newTagInput = ref("")
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
+
+const currentTags = computed(() => {
+  return documentStore.currentDocument?.tags || []
+})
+
+const handleAddTag = async () => {
+  const tag = newTagInput.value.trim().replace(/^#/, "")
+  if (!tag) return
+  if (documentStore.currentDocument) {
+    await documentStore.addTag(documentStore.currentDocument.id, tag)
+  }
+  newTagInput.value = ""
+}
+
+const handleRemoveTag = async (tag: string) => {
+  if (!documentStore.currentDocument) return
+  await documentStore.removeTag(documentStore.currentDocument.id, tag)
+}
 
 const handleKeydown = (e: KeyboardEvent) => {
   const isCmd = e.metaKey || e.ctrlKey
@@ -36,6 +55,9 @@ watch(() => documentStore.currentContent, () => {
   
   autoSaveTimer = setTimeout(() => {
     documentStore.saveCurrentDocument()
+    if (documentStore.currentDocument) {
+      documentStore.syncTagsFromContent(documentStore.currentDocument.id)
+    }
   }, 1000)
 })
 
@@ -79,6 +101,26 @@ onUnmounted(() => {
           <span class="updated">
             最后更新: {{ new Date(documentStore.currentDocument.updatedAt).toLocaleString() }}
           </span>
+        </div>
+      </div>
+      <div v-if="documentStore.currentDocument" class="tag-bar">
+        <div class="tag-list">
+          <span
+            v-for="tag in currentTags"
+            :key="tag"
+            class="tag-chip"
+            :style="{ backgroundColor: documentStore.getTagColor(tag) + '22', color: documentStore.getTagColor(tag), borderColor: documentStore.getTagColor(tag) }"
+          >
+            #{{ tag }}
+            <button class="tag-remove" @click="handleRemoveTag(tag)">×</button>
+          </span>
+        </div>
+        <div class="tag-input-wrap">
+          <input
+            v-model="newTagInput"
+            placeholder="输入标签并回车"
+            @keyup.enter="handleAddTag"
+          />
         </div>
       </div>
       <Editor v-if="documentStore.currentDocument" />
@@ -141,5 +183,49 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   color: #888;
+}
+
+.tag-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  flex-wrap: wrap;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 0.8rem;
+}
+
+.tag-remove {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.tag-input-wrap {
+  flex: 1;
+  min-width: 160px;
+}
+
+.tag-input-wrap input {
+  width: 100%;
 }
 </style>
