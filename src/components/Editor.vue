@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, onBeforeUnmount } from "vue";
+import { ref, onMounted, watch, onBeforeUnmount, nextTick } from "vue";
 import { useDocumentStore } from "../stores/document";
-import { EditorState } from "@codemirror/state";
+import { EditorState, EditorSelection } from "@codemirror/state";
 import {
   EditorView,
   keymap,
@@ -16,13 +16,34 @@ import { autocompletion, completionKeymap } from "@codemirror/autocomplete";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { renderMarkdown } from "../utils/markdown";
 
+/** 编辑器组件属性 */
+const props = defineProps<{
+  /** 需要滚动到的字符位置，从搜索结果跳转时使用 */
+  scrollToPosition?: number | null;
+}>();
+
+const emit = defineEmits<{
+  /** 滚动完成事件 */
+  (e: "scrolled"): void;
+}>();
+
 const documentStore = useDocumentStore();
 
+/** 编辑器容器 DOM 引用 */
 const editorContainer = ref<HTMLDivElement | null>(null);
+/** 预览容器 DOM 引用 */
 const previewContainer = ref<HTMLDivElement | null>(null);
+/** CodeMirror 编辑器实例 */
 let editorView: EditorView | null = null;
+/** 是否为深色模式 */
 let isDark = document.documentElement.classList.contains("dark");
 
+/**
+ * 双向链接自动补全
+ * 当用户输入 [[ 时，显示已有文档列表供选择
+ * @param context - 自动补全上下文
+ * @returns 自动补全选项或 null
+ */
 const linkCompletion = (context: {
   state: EditorState;
   pos: number;
@@ -57,9 +78,32 @@ const linkCompletion = (context: {
   return null;
 };
 
+/**
+ * 更新 store 中的文档内容
+ * 在编辑器内容变化时调用
+ */
 const updateContent = () => {
   if (!editorView) return;
   documentStore.currentContent = editorView.state.doc.toString();
+};
+
+/**
+ * 滚动编辑器到指定位置
+ * 从搜索结果跳转时使用，将光标定位到匹配位置并滚动到视图中
+ * @param pos - 字符位置（0 开始）
+ */
+const scrollToPosition = (pos: number) => {
+  if (!editorView) return;
+  
+  const doc = editorView.state.doc;
+  const safePos = Math.max(0, Math.min(pos, doc.length));
+  
+  editorView.dispatch({
+    selection: EditorSelection.cursor(safePos),
+    scrollIntoView: true,
+  });
+  
+  emit("scrolled");
 };
 
 const handleDrop = async (e: DragEvent) => {
@@ -142,6 +186,22 @@ watch(
           insert: documentStore.currentContent,
         },
       });
+    }
+  },
+);
+
+/**
+ * 监听滚动位置变化
+ * 当从搜索结果跳转时，自动滚动到匹配位置
+ */
+watch(
+  () => props.scrollToPosition,
+  async (pos) => {
+    if (pos !== null && pos !== undefined && editorView) {
+      await nextTick();
+      setTimeout(() => {
+        scrollToPosition(pos);
+      }, 100);
     }
   },
 );

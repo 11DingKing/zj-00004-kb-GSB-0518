@@ -1,6 +1,12 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import type { DocumentMeta, Snapshot, SearchResult } from "../types";
+import type {
+  DocumentMeta,
+  Snapshot,
+  SearchResult,
+  MatchPosition,
+  TagWithColor,
+} from "../types";
 import {
   generateId,
   getDocuments,
@@ -19,7 +25,6 @@ import {
   getImage,
   getAllImages,
 } from "../utils/db";
-import Fuse from "fuse.js";
 
 export const useDocumentStore = defineStore("document", () => {
   const documents = ref<DocumentMeta[]>([]);
@@ -172,33 +177,87 @@ export const useDocumentStore = defineStore("document", () => {
     return URL.createObjectURL(image.blob);
   }
 
+  /**
+   * 全文搜索文档
+   * 搜索范围包括标题、正文内容和标签
+   * 返回包含匹配位置信息的搜索结果
+   * @param query - 搜索关键词
+   * @returns 搜索结果数组，按匹配度排序
+   */
   async function searchDocuments(query: string): Promise<SearchResult[]> {
     if (!query.trim()) return [];
 
-    const fuse = new Fuse(documents.value, {
-      keys: ["title", "tags", "path"],
-      includeScore: true,
-      includeMatches: true,
-      threshold: 0.4,
-    });
+    const lowerQuery = query.toLowerCase();
+    const results: SearchResult[] = [];
 
-    const results = fuse.search(query);
+    for (const doc of documents.value) {
+      const content = (await getDocFromDB(doc.id)) || "";
+      const matchPositions: MatchPosition[] = [];
 
-    return await Promise.all(
-      results.map(async (result) => {
-        const content = (await getDocFromDB(result.item.id)) || "";
+      const lowerTitle = doc.title.toLowerCase();
+      let titleIndex = lowerTitle.indexOf(lowerQuery);
+      while (titleIndex !== -1) {
+        matchPositions.push({
+          field: "title",
+          start: titleIndex,
+          end: titleIndex + query.length,
+          highlightText: doc.title.substring(
+            titleIndex,
+            titleIndex + query.length,
+          ),
+        });
+        titleIndex = lowerTitle.indexOf(lowerQuery, titleIndex + 1);
+      }
+
+      const lowerContent = content.toLowerCase();
+      let contentIndex = lowerContent.indexOf(lowerQuery);
+      while (contentIndex !== -1) {
+        matchPositions.push({
+          field: "content",
+          start: contentIndex,
+          end: contentIndex + query.length,
+          highlightText: content.substring(
+            contentIndex,
+            contentIndex + query.length,
+          ),
+        });
+        contentIndex = lowerContent.indexOf(lowerQuery, contentIndex + 1);
+      }
+
+      doc.tags.forEach((tag) => {
+        if (tag.toLowerCase().includes(lowerQuery)) {
+          const tagIndex = tag.toLowerCase().indexOf(lowerQuery);
+          matchPositions.push({
+            field: "title",
+            start: 0,
+            end: query.length,
+            highlightText: tag.substring(tagIndex, tagIndex + query.length),
+          });
+        }
+      });
+
+      if (matchPositions.length > 0) {
         const snippet = extractSnippet(content, query);
+        const score = matchPositions.some((m) => m.field === "title")
+          ? 0.1
+          : 0.5;
 
-        return {
-          document: result.item,
+        results.push({
+          document: doc,
           snippet,
-          score: result.score || 1,
+          score,
           matches: {
-            indices: (result.matches || []).flatMap((m) => m.indices || []),
+            indices: matchPositions.map(
+              (m) => [m.start, m.end] as [number, number],
+            ),
           },
-        };
-      }),
-    );
+          matchPositions,
+        });
+      }
+    }
+
+    results.sort((a, b) => a.score - b.score);
+    return results;
   }
 
   function extractSnippet(content: string, query: string): string {
@@ -259,6 +318,103 @@ export const useDocumentStore = defineStore("document", () => {
 
   function escapeRegExp(string: string): string {
     return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  /**
+   * 计算字符串的 hash 值
+   * 用于根据标签名生成稳定的颜色
+   * @param str - 输入字符串
+   * @returns 非负整数 hash 值
+   */
+  function hashString(str: string): number {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = (hash << 5) - hash + char;
+      hash = hash & hash;
+    }
+    return Math.abs(hash);
+  }
+
+  /**
+   * 根据标签名生成颜色
+   * 使用 HSL 色轮，基于标签名 hash 自动分配颜色
+   * 保证相同标签始终使用相同颜色
+   * @param tagName - 标签名称
+   * @returns 包含背景色和文字颜色的对象
+   */
+  function getTagColor(tagName: string): TagWithColor {
+    const hash = hashString(tagName);
+    const hue = hash % 360;
+    const saturation = 70 + (hash % 15);
+    const lightness = 45 + (hash % 10);
+    const backgroundColor = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+    const textLightness = lightness > 50 ? 15 : 90;
+    const color = `hsl(${hue}, ${saturation}%, ${textLightness}%)`;
+    return { name: tagName, color, backgroundColor };
+  }
+
+  /** 所有文档中使用的标签列表（去重并排序） */
+  const allTags = computed(() => {
+    const tagSet = new Set<string>();
+    documents.value.forEach((doc) => {
+      doc.tags.forEach((tag) => tagSet.add(tag));
+    });
+    return Array.from(tagSet).sort();
+  });
+
+  /** 所有标签及其对应的颜色信息 */
+  const allTagsWithColor = computed(() => {
+    return allTags.value.map((tag) => getTagColor(tag));
+  });
+
+  /**
+   * 根据标签过滤文档
+   * @param tag - 标签名称，为空时返回所有文档
+   * @returns 包含指定标签的文档列表
+   */
+  function getDocumentsByTag(tag: string): DocumentMeta[] {
+    if (!tag) return documents.value;
+    return documents.value.filter((doc) => doc.tags.includes(tag));
+  }
+
+  /**
+   * 为文档添加标签
+   * @param documentId - 文档 ID
+   * @param tag - 要添加的标签名称
+   */
+  async function addTagToDocument(documentId: string, tag: string) {
+    const doc = documents.value.find((d) => d.id === documentId);
+    if (!doc) return;
+
+    const trimmedTag = tag.trim();
+    if (!trimmedTag || doc.tags.includes(trimmedTag)) return;
+
+    const newTags = [...doc.tags, trimmedTag];
+    updateDocument(documentId, { tags: newTags });
+    doc.tags = newTags;
+
+    if (currentDocument.value?.id === documentId) {
+      currentDocument.value.tags = newTags;
+    }
+  }
+
+  /**
+   * 从文档移除标签
+   * @param documentId - 文档 ID
+   * @param tag - 要移除的标签名称
+   */
+  async function removeTagFromDocument(documentId: string, tag: string) {
+    const doc = documents.value.find((d) => d.id === documentId);
+    if (!doc) return;
+
+    const newTags = doc.tags.filter((t) => t !== tag);
+    updateDocument(documentId, { tags: newTags });
+    doc.tags = newTags;
+
+    if (currentDocument.value?.id === documentId) {
+      currentDocument.value.tags = newTags;
+    }
   }
 
   interface GraphNode {
@@ -373,6 +529,8 @@ export const useDocumentStore = defineStore("document", () => {
     isInitialized,
     documentsMap,
     documentTitles,
+    allTags,
+    allTagsWithColor,
     initialize,
     createDocument,
     openDocument,
@@ -388,5 +546,9 @@ export const useDocumentStore = defineStore("document", () => {
     getGraphData,
     importDocuments,
     exportAllData,
+    getTagColor,
+    getDocumentsByTag,
+    addTagToDocument,
+    removeTagFromDocument,
   };
 });
