@@ -21,22 +21,27 @@ const documentStore = useDocumentStore();
 
 const editorContainer = ref<HTMLDivElement | null>(null);
 const previewContainer = ref<HTMLDivElement | null>(null);
+/** 新标签输入框的值 */
 const newTagInput = ref("");
 let editorView: EditorView | null = null;
 let isDark = document.documentElement.classList.contains("dark");
 
+/** 当前文档的标签列表，响应式跟随 currentDocument 变化 */
 const currentTags = computed(() => {
   return documentStore.currentDocument?.tags || [];
 });
 
+/** 当前是否为暗色模式，用于动态切换标签颜色 */
 const isDarkMode = computed(() => document.documentElement.classList.contains("dark"));
 
+/** 根据标签名生成 HSL 色轮背景色样式对象，自动适配暗色/亮色模式 */
 const getTagStyle = (tag: string) => {
   return {
     backgroundColor: isDarkMode.value ? tagColorDark(tag) : tagColor(tag),
   };
 };
 
+/** 将输入框中的标签添加到当前文档，自动去重并清空输入框 */
 const addTag = () => {
   const tag = newTagInput.value.trim();
   if (!tag || !documentStore.currentDocument) return;
@@ -48,6 +53,7 @@ const addTag = () => {
   newTagInput.value = "";
 };
 
+/** 从当前文档移除指定标签 */
 const removeTag = (tag: string) => {
   if (!documentStore.currentDocument) return;
   documentStore.removeTag(documentStore.currentDocument.id, tag);
@@ -114,6 +120,7 @@ const handleDragOver = (e: DragEvent) => {
   e.preventDefault();
 };
 
+/** 根据 searchScrollTarget 在编辑器中定位到首个匹配位置并滚动选中，完成后清除目标 */
 const scrollToSearchMatch = () => {
   const query = documentStore.searchScrollTarget;
   if (!query || !editorView) return;
@@ -195,6 +202,7 @@ watch(
   },
 );
 
+/** 监听搜索跳转目标变化，有新目标时等待 DOM 更新后滚动到匹配位置 */
 watch(
   () => documentStore.searchScrollTarget,
   async (target) => {

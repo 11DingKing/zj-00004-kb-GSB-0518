@@ -1,11 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import type {
-  DocumentMeta,
-  Snapshot,
-  SearchResult,
-  FullTextSearchResult,
-} from "../types";
+import type { DocumentMeta, Snapshot, FullTextSearchResult } from "../types";
 import {
   generateId,
   getDocuments,
@@ -24,7 +19,6 @@ import {
   getImage,
   getAllImages,
 } from "../utils/db";
-import Fuse from "fuse.js";
 
 export const useDocumentStore = defineStore("document", () => {
   const documents = ref<DocumentMeta[]>([]);
@@ -32,6 +26,7 @@ export const useDocumentStore = defineStore("document", () => {
   const currentContent = ref("");
   const snapshots = ref<Snapshot[]>([]);
   const isInitialized = ref(false);
+  /** 搜索跳转目标关键词，编辑器打开文档后自动滚动到首个匹配位置 */
   const searchScrollTarget = ref<string | null>(null);
 
   const documentsMap = computed(() => {
@@ -44,6 +39,7 @@ export const useDocumentStore = defineStore("document", () => {
     return documents.value.map((doc) => doc.title);
   });
 
+  /** 收集所有文档中出现过的标签，去重后按字母排序 */
   const allTags = computed(() => {
     const tagSet = new Set<string>();
     documents.value.forEach((doc) => {
@@ -186,35 +182,6 @@ export const useDocumentStore = defineStore("document", () => {
     return URL.createObjectURL(image.blob);
   }
 
-  async function searchDocuments(query: string): Promise<SearchResult[]> {
-    if (!query.trim()) return [];
-
-    const fuse = new Fuse(documents.value, {
-      keys: ["title", "tags", "path"],
-      includeScore: true,
-      includeMatches: true,
-      threshold: 0.4,
-    });
-
-    const results = fuse.search(query);
-
-    return await Promise.all(
-      results.map(async (result) => {
-        const content = (await getDocFromDB(result.item.id)) || "";
-        const snippet = extractSnippet(content, query);
-
-        return {
-          document: result.item,
-          snippet,
-          score: result.score || 1,
-          matches: {
-            indices: (result.matches || []).flatMap((m) => m.indices || []),
-          },
-        };
-      }),
-    );
-  }
-
   function extractSnippet(content: string, query: string): string {
     const lowerContent = content.toLowerCase();
     const lowerQuery = query.toLowerCase();
@@ -239,6 +206,10 @@ export const useDocumentStore = defineStore("document", () => {
     );
   }
 
+  /**
+   * 全文搜索：遍历所有文档的标题和正文内容，大小写不敏感匹配，
+   * 返回带高亮片段和匹配位置的结果，按评分排序
+   */
   async function fullTextSearch(
     query: string,
   ): Promise<FullTextSearchResult[]> {
@@ -285,6 +256,7 @@ export const useDocumentStore = defineStore("document", () => {
     return results;
   }
 
+  /** 在内容片段中找到匹配位置并用 <mark> 标签包裹，返回带 HTML 高亮的摘要 */
   function highlightSnippet(content: string, query: string): string {
     const lowerContent = content.toLowerCase();
     const lowerQuery = query.toLowerCase();
@@ -317,6 +289,7 @@ export const useDocumentStore = defineStore("document", () => {
       .replace(/"/g, "&quot;");
   }
 
+  /** 为指定文档添加标签，自动去重并持久化到 localStorage */
   async function addTag(documentId: string, tag: string): Promise<void> {
     const doc = documents.value.find((d) => d.id === documentId);
     if (!doc || doc.tags.includes(tag)) return;
@@ -327,6 +300,7 @@ export const useDocumentStore = defineStore("document", () => {
     }
   }
 
+  /** 从指定文档移除标签并持久化到 localStorage */
   async function removeTag(documentId: string, tag: string): Promise<void> {
     const doc = documents.value.find((d) => d.id === documentId);
     if (!doc) return;
@@ -337,6 +311,7 @@ export const useDocumentStore = defineStore("document", () => {
     }
   }
 
+  /** 设置搜索跳转目标，编辑器监听此值后滚动到首个匹配位置 */
   function setSearchScrollTarget(query: string | null): void {
     searchScrollTarget.value = query;
   }
@@ -500,7 +475,6 @@ export const useDocumentStore = defineStore("document", () => {
     restoreSnapshot,
     uploadImage,
     getImageUrl,
-    searchDocuments,
     fullTextSearch,
     findDocumentByTitle,
     addTag,

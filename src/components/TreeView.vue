@@ -17,22 +17,30 @@ const editingId = ref<string | null>(null)
 const editingTitle = ref('')
 const draggedItem = ref<string | null>(null)
 
+/** 当前全文搜索查询关键词 */
 const fullTextQuery = ref('')
+/** 全文搜索返回的结果列表 */
 const fullTextResults = ref<FullTextSearchResult[]>([])
+/** 是否处于搜索激活态（有查询词且已触发搜索） */
 const isSearchActive = ref(false)
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
+/** 当前选中的标签过滤值，为 null 时不过滤 */
 const tagFilter = ref<string | null>(null)
+/** 标签过滤下拉菜单是否展开 */
 const showTagDropdown = ref(false)
 
+/** 当前是否为暗色模式，用于动态切换标签颜色 */
 const isDark = computed(() => document.documentElement.classList.contains('dark'))
 
+/** 根据标签名生成 HSL 色轮背景色样式对象，自动适配暗色/亮色模式 */
 const getTagStyle = (tag: string) => {
   return {
     backgroundColor: isDark.value ? tagColorDark(tag) : tagColor(tag),
   }
 }
 
+/** 排序后的文档列表，若设置了标签过滤则只显示包含该标签的文档 */
 const sortedDocuments = computed(() => {
   let docs = [...documentStore.documents].sort((a, b) =>
     a.title.localeCompare(b.title)
@@ -43,6 +51,7 @@ const sortedDocuments = computed(() => {
   return docs
 })
 
+/** 处理搜索输入，300ms 防抖后调用全文搜索，有内容时进入搜索激活态 */
 const handleFullTextSearchInput = () => {
   if (searchTimer) clearTimeout(searchTimer)
   searchTimer = setTimeout(async () => {
@@ -56,11 +65,13 @@ const handleFullTextSearchInput = () => {
   }, 300)
 }
 
+/** 点击搜索结果：设置搜索跳转目标后导航到目标文档，编辑器将自动滚动到匹配位置 */
 const handleSearchResultClick = (result: FullTextSearchResult) => {
   documentStore.setSearchScrollTarget(fullTextQuery.value)
   router.push(`/doc/${result.document.id}`)
 }
 
+/** 清空搜索状态，退出搜索激活态并重置跳转目标 */
 const clearSearch = () => {
   fullTextQuery.value = ''
   isSearchActive.value = false
@@ -68,6 +79,7 @@ const clearSearch = () => {
   documentStore.setSearchScrollTarget(null)
 }
 
+/** 切换标签过滤：点击同一标签取消过滤，点击不同标签切换过滤，并关闭下拉菜单 */
 const toggleTagFilter = (tag: string) => {
   if (tagFilter.value === tag) {
     tagFilter.value = null
@@ -77,6 +89,7 @@ const toggleTagFilter = (tag: string) => {
   showTagDropdown.value = false
 }
 
+/** 清除标签过滤 */
 const clearTagFilter = () => {
   tagFilter.value = null
 }

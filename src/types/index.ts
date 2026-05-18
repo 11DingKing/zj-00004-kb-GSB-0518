@@ -38,15 +38,7 @@ export interface BacklinkInfo {
   occurrences: number;
 }
 
-export interface SearchResult {
-  document: DocumentMeta;
-  snippet: string;
-  score: number;
-  matches: {
-    indices: [number, number][];
-  };
-}
-
+/** 全文搜索结果，包含高亮片段和匹配位置信息 */
 export interface FullTextSearchResult {
   document: DocumentMeta;
   snippet: string;
@@ -55,6 +47,7 @@ export interface FullTextSearchResult {
   score: number;
 }
 
+/** 根据标签名 hash 计算亮色模式下的 HSL 色轮颜色（饱和度 65%，亮度 75%） */
 export function tagColor(tag: string): string {
   let hash = 0;
   for (let i = 0; i < tag.length; i++) {
@@ -64,6 +57,7 @@ export function tagColor(tag: string): string {
   return `hsl(${hue}, 65%, 75%)`;
 }
 
+/** 根据标签名 hash 计算暗色模式下的 HSL 色轮颜色（饱和度 55%，亮度 45%） */
 export function tagColorDark(tag: string): string {
   let hash = 0;
   for (let i = 0; i < tag.length; i++) {
