@@ -14,9 +14,12 @@ const graphContainer = ref<HTMLDivElement | null>(null);
 let svg: any = null;
 let simulation: any = null;
 
+/** 全文搜索结果（来自 document store）。 */
 const fullTextResults = computed(() => documentStore.searchResults);
+/** 全文搜索关键词（来自 document store）。 */
 const fullTextQuery = computed(() => documentStore.searchQuery);
 
+/** 触发全文搜索：根据输入更新 store 中的搜索状态。 */
 const handleSearch = async () => {
   const value = documentStore.searchQuery.trim();
   if (value) {
@@ -33,6 +36,7 @@ watch(
   },
 );
 
+/** 打开指定文档（路由跳转到 /doc/:id）。 */
 const handleOpenDocument = (id: string) => {
   router.push(`/doc/${id}`);
 };
@@ -42,6 +46,9 @@ interface HighlightSegment {
   highlight: boolean;
 }
 
+/**
+ * 将一段文本按关键词切分为“高亮/非高亮”片段数组（大小写不敏感）。
+ */
 function buildHighlightSegments(
   text: string,
   query: string,

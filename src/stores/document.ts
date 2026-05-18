@@ -19,7 +19,6 @@ import {
   getImage,
   getAllImages,
 } from "../utils/db";
-import Fuse from "fuse.js";
 
 export const useDocumentStore = defineStore("document", () => {
   const documents = ref<DocumentMeta[]>([]);
@@ -38,11 +37,15 @@ export const useDocumentStore = defineStore("document", () => {
     return documents.value.map((doc) => doc.title);
   });
 
+  /** 当前搜索关键词（全文搜索）。 */
   const searchQuery = ref("");
+  /** 当前搜索结果（全文搜索）。 */
   const searchResults = ref<SearchResult[]>([]);
 
+  /** 当前标签过滤值（null 表示不过滤）。 */
   const tagFilter = ref<string | null>(null);
 
+  /** 按标签过滤后的文档列表。 */
   const filteredDocuments = computed(() => {
     if (!tagFilter.value) return documents.value;
     const tag = tagFilter.value.trim();
@@ -50,6 +53,7 @@ export const useDocumentStore = defineStore("document", () => {
     return documents.value.filter((doc) => doc.tags.includes(tag));
   });
 
+  /** 所有文档的去重标签集合（按字典序排序）。 */
   const allTags = computed(() => {
     const tagSet = new Set<string>();
     for (const doc of documents.value) {
@@ -195,56 +199,18 @@ export const useDocumentStore = defineStore("document", () => {
     return URL.createObjectURL(image.blob);
   }
 
+  /**
+   * 按关键词搜索文档（历史兼容入口）。
+   * 现统一委托给 `performFullTextSearch` 实现。
+   */
   async function searchDocuments(query: string): Promise<SearchResult[]> {
-    if (!query.trim()) return [];
-
-    const fuse = new Fuse(documents.value, {
-      keys: ["title", "tags", "path"],
-      includeScore: true,
-      includeMatches: true,
-      threshold: 0.4,
-    });
-
-    const results = fuse.search(query);
-    const lowerQuery = query.toLowerCase();
-
-    return await Promise.all(
-      results.map(async (result) => {
-        const content = (await getDocFromDB(result.item.id)) || "";
-        const snippet = extractSnippet(content, query);
-        const contentIndices = collectMatchIndices(content, lowerQuery);
-
-        const titleStart = (result.item.title || "")
-          .toLowerCase()
-          .indexOf(lowerQuery);
-        const titleIndices: [number, number][] =
-          titleStart !== -1
-            ? [[titleStart, titleStart + query.length - 1]]
-            : [];
-
-        const tagIndices: [number, number][] = [];
-        for (const tag of result.item.tags) {
-          const t = (tag || "").toLowerCase();
-          const idx = t.indexOf(lowerQuery);
-          if (idx !== -1) {
-            tagIndices.push([idx, idx + query.length - 1]);
-          }
-        }
-
-        const allIndices = [...titleIndices, ...tagIndices, ...contentIndices];
-
-        return {
-          document: result.item,
-          snippet,
-          score: result.score || 1,
-          matches: {
-            indices: allIndices,
-          },
-        };
-      }),
-    );
+    return performFullTextSearch(query);
   }
 
+  /**
+   * 对所有文档进行全文搜索（标题 / 标签 / 正文）。
+   * 会同步更新 store 中的 `searchQuery` 与 `searchResults`。
+   */
   async function performFullTextSearch(query: string): Promise<SearchResult[]> {
     if (!query.trim()) {
       searchQuery.value = "";
@@ -303,24 +269,7 @@ export const useDocumentStore = defineStore("document", () => {
     return results;
   }
 
-  function extractSnippet(content: string, query: string): string {
-    const lowerContent = content.toLowerCase();
-    const lowerQuery = query.toLowerCase();
-    const index = lowerContent.indexOf(lowerQuery);
-
-    if (index === -1) {
-      return content.substring(0, 200) + (content.length > 200 ? "..." : "");
-    }
-
-    const start = Math.max(0, index - 50);
-    const end = Math.min(content.length, index + query.length + 50);
-    const snippet = content.substring(start, end);
-
-    return (
-      (start > 0 ? "..." : "") + snippet + (end < content.length ? "..." : "")
-    );
-  }
-
+  /** 收集关键词在文本中的所有命中区间（大小写不敏感）。 */
   function collectMatchIndices(
     text: string,
     lowerQuery: string,
@@ -341,6 +290,9 @@ export const useDocumentStore = defineStore("document", () => {
     return indices;
   }
 
+  /**
+   * 根据命中区间构建片段（在命中前后各取一定长度窗口）。
+   */
   function buildSnippet(
     text: string,
     matchRange: [number, number],
@@ -365,6 +317,10 @@ export const useDocumentStore = defineStore("document", () => {
     );
   }
 
+  /**
+   * 根据标签名生成稳定的 HSL 颜色。
+   * 通过标签名的哈希作为 HSL 的 hue，保证同标签颜色一致。
+   */
   function getTagColor(tag: string): string {
     const normalized = tag.trim().toLowerCase();
     let hash = 0;
@@ -377,6 +333,10 @@ export const useDocumentStore = defineStore("document", () => {
     return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
   }
 
+  /**
+   * 从正文内容中提取 `#tag` 形式的标签。
+   * 支持空格或行首分隔符，如 `#abc #def` 会被识别为两个标签。
+   */
   function extractTagsFromText(text: string): string[] {
     if (!text) return [];
     const matches = text.match(/(?:^|\s)#([^\s#]+)/g);
@@ -384,11 +344,13 @@ export const useDocumentStore = defineStore("document", () => {
     return Array.from(new Set(matches.map((m) => m.trim().slice(1))));
   }
 
+  /** 获取指定文档的标签列表（副本）。 */
   function getDocumentTags(id: string): string[] {
     const doc = documents.value.find((d) => d.id === id);
     return doc ? [...doc.tags] : [];
   }
 
+  /** 为指定文档添加标签（会去重并同步持久化）。 */
   async function addTag(id: string, tag: string): Promise<void> {
     const trimmed = tag.trim();
     if (!trimmed) return;
@@ -406,6 +368,7 @@ export const useDocumentStore = defineStore("document", () => {
     }
   }
 
+  /** 从指定文档移除标签并同步持久化。 */
   async function removeTag(id: string, tag: string): Promise<void> {
     const trimmed = tag.trim();
     if (!trimmed) return;
@@ -422,6 +385,10 @@ export const useDocumentStore = defineStore("document", () => {
     }
   }
 
+  /**
+   * 根据正文内容同步文档标签。
+   * 将正文中的 `#tag` 集合作为文档的 tags（会覆盖）。
+   */
   async function syncTagsFromContent(id: string): Promise<string[]> {
     const doc = documents.value.find((d) => d.id === id);
     if (!doc) return [];
@@ -435,10 +402,12 @@ export const useDocumentStore = defineStore("document", () => {
     return extracted;
   }
 
+  /** 设置当前的标签过滤值（传空值会清除过滤）。 */
   function setTagFilter(tag: string | null) {
     tagFilter.value = tag ? tag.trim() : null;
   }
 
+  /** 清空搜索关键词与搜索结果。 */
   function clearSearch() {
     searchQuery.value = "";
     searchResults.value = [];

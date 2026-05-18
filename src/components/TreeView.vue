@@ -15,6 +15,7 @@ const editingId = ref<string | null>(null)
 const editingTitle = ref('')
 const draggedItem = ref<string | null>(null)
 
+/** 当前目录展示的文档列表：根据标签过滤状态选择数据源并按标题排序。 */
 const sortedDocuments = computed(() => {
   const source = documentStore.tagFilter
     ? documentStore.filteredDocuments
@@ -24,10 +25,12 @@ const sortedDocuments = computed(() => {
   )
 })
 
+/** 当前过滤标签（用于 select 绑定）。 */
 const tagFilterLabel = computed(() => {
   return documentStore.tagFilter || ""
 })
 
+/** 按下拉选择更新标签过滤值。 */
 const handleTagFilterChange = (event: Event) => {
   const select = event.target as HTMLSelectElement
   documentStore.setTagFilter(select.value)

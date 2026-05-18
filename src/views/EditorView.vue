@@ -15,10 +15,12 @@ const showSidebar = ref(true)
 const newTagInput = ref("")
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
 
+/** 当前文档的标签列表（来自 store 的当前文档）。 */
 const currentTags = computed(() => {
   return documentStore.currentDocument?.tags || []
 })
 
+/** 新增标签：从输入框读取并同步到 store。 */
 const handleAddTag = async () => {
   const tag = newTagInput.value.trim().replace(/^#/, "")
   if (!tag) return
@@ -28,6 +30,7 @@ const handleAddTag = async () => {
   newTagInput.value = ""
 }
 
+/** 删除标签：调用 store 的 removeTag。 */
 const handleRemoveTag = async (tag: string) => {
   if (!documentStore.currentDocument) return
   await documentStore.removeTag(documentStore.currentDocument.id, tag)
