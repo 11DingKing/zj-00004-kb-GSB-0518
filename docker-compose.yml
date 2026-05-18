@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: offline-knowledge-base
+    ports:
+      - "16004:5173"
+    volumes:
+      - ./src:/app/src
+    environment:
+      - NODE_ENV=development
+    command: npm run dev
